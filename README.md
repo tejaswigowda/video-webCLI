@@ -6,7 +6,13 @@ The Loom distinction matters: Loom uploads your screen recording to Loom. This t
 
 ## Run locally
 
-Serve this directory over `localhost` (required for screen capture and the origin-private file system), then open `index.html`. The included export bundle runs locally; after changing its source, run `npm install` and `npm run build`. The page has a restrictive Content Security Policy with `connect-src 'none'`; its scripts, styles, and capture data are local.
+Serve this directory over `localhost` (required for screen capture and the origin-private file system):
+
+```sh
+python3 -m http.server 8000
+```
+
+Open `http://localhost:8000/`. The included export bundle runs locally; rebuilding it requires installing development dependencies. The page has a restrictive Content Security Policy with `connect-src 'none'`; its scripts, styles, and capture data are local.
 
 ## Capture and recovery
 
@@ -20,13 +26,15 @@ Import browser-supported video files into the media library and add them to the 
 
 Imported files and the edit timeline currently live only in the open tab: they are not restored on reload. Keep your original files. **Export project** downloads OTIO-shaped timeline JSON only; importing or relinking that project is not implemented. Captured source chunks continue to use persistent browser storage.
 
-Import an SRT file to place captions on a global timeline, independent of clip order. They appear in preview and can be burned into the video or attached as a selectable WebVTT subtitle track. Captions extending beyond the sequence must be corrected before export.
+Choose **Import SRT captions** to place cues on the global timeline. They appear in preview and stay at their original timeline times when clips are reordered or trimmed. Importing another SRT replaces the existing captions; **Remove captions** clears them, and **Undo** restores the previous caption state. Captions extending beyond the sequence must be corrected before export.
 
 ## Video export
 
-Choose **Export MP4** below the timeline. The browser decodes the clips, renders them at 30 fps at the first clip's dimensions (other clips are letterboxed), and encodes H.264 video and, when present, AAC audio. Audio from video clips is included; files with multiple audio tracks and unsupported decoding or encoding are reported instead of silently omitting audio. A browser with the necessary WebCodecs and OPFS support is required. Selectable WebVTT-in-MP4 captions may not be supported by all players.
+Below the timeline, choose **Burn into video** for permanently visible captions or **Selectable subtitle track** for WebVTT captions that a player can turn on or off. Then choose **Export MP4** and use the download links when rendering completes. Selectable WebVTT-in-MP4 captions may not be supported by all players.
 
-Download the video, encoder/timeline manifest, dependency licenses, and `files.sha256` using the separate links. Export files are stored in browser origin storage and count against its quota; clear this site's data in browser settings to remove them. Encoding is browser-dependent, so identical exports are not guaranteed to have identical bytes. Export does not upload media.
+The browser renders clips at 30 fps at the first clip's dimensions (other clips are letterboxed), and encodes H.264 video and, when present, AAC audio. Audio from video clips is included; files with multiple audio tracks and unsupported decoding or encoding are reported instead of silently omitting audio. A browser with the necessary WebCodecs and OPFS support is required.
+
+Download the video, encoder/timeline manifest, dependency licenses, and `files.sha256` using the separate links. Export files are stored in browser origin storage and count against its quota. Clearing this site's data removes them **and any stored captures**, so download anything you want to keep first. Encoding is browser-dependent, so identical exports are not guaranteed to have identical bytes. Export does not upload media.
 
 ## Current implementation boundary
 
@@ -36,4 +44,4 @@ The tools run on separate origins and cannot share browser storage. Until the fa
 
 ## Development
 
-Run the focused timeline checks with `npm test`. The app uses modern Chromium APIs (`getDisplayMedia`, MediaRecorder, OPFS where available, and IndexedDB fallback).
+Install dependencies with `npm ci`, rebuild the export bundle with `npm run build`, and run the tests with `npm test`. The app uses modern Chromium APIs (`getDisplayMedia`, MediaRecorder, OPFS where available, and IndexedDB fallback).
