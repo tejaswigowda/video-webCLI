@@ -1,0 +1,17 @@
+{
+  "name": "video-webcli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild exporter.js --bundle --format=esm --loader:.txt=text --outfile=export-bundle.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "mediabunny": "1.66.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
