@@ -19,7 +19,8 @@ const elements = Object.fromEntries([
   "recovery", "message", "recording-status", "status-label", "screen-state", "camera-state",
   "microphone-state", "camera-opt-in", "microphone-opt-in", "start-button", "stop-button",
   "elapsed", "export-project", "export-sources", "empty-project", "project-content", "track-list",
-  "title-text", "audio-level", "audio-value", "inset-position", "inset-size"
+  "title-text", "audio-level", "audio-value", "microphone-level", "microphone-value",
+  "inset-position", "inset-size", "inset-shape"
 ].map((id) => [id.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), document.getElementById(id)]));
 
 const trackDefinitions = {
@@ -258,10 +259,14 @@ async function stopCapture() {
     elements.titleText.value = "";
     elements.audioLevel.value = "100";
     elements.audioValue.textContent = "100%";
+    elements.microphoneLevel.value = "100";
+    elements.microphoneValue.textContent = "100%";
     elements.insetPosition.value = "bottom-right";
     elements.insetSize.value = "medium";
+    elements.insetShape.value = "rounded";
     renderTracks();
     renderProject(true);
+    syncTimelineControls();
     setMessage("Capture saved. Each source is stored independently and can be downloaded from this browser.");
     window.dispatchEvent(new CustomEvent("video-capture-ready", { detail: projectSession }));
   } catch (error) {
@@ -318,6 +323,7 @@ function renderProject(canExport) {
   elements.exportSources.disabled = !canExport || !projectSession?.id;
   elements.insetPosition.disabled = !hasCamera;
   elements.insetSize.disabled = !hasCamera;
+  elements.insetShape.disabled = !hasCamera;
 }
 
 function formatBytes(bytes = 0) {
@@ -344,10 +350,23 @@ async function exportProject() {
       webcli: {
         ...timeline.metadata.webcli,
         title: elements.titleText.value.trim() || null,
-        audio_mix: { volume_percent: Number(elements.audioLevel.value) },
+        audio_mix: {
+          volume_percent: Number(elements.audioLevel.value),
+          microphone_volume_percent: Number(elements.microphoneLevel.value)
+        },
+        sources: Object.entries(projectSession.tracks).map(([trackId, track]) => ({
+          id: `${projectSession.id}/${trackId}`,
+          name: `${track.label} recording`,
+          durationMs: track.durationMs || projectSession.durationMs,
+          reference: `webcli://session/${projectSession.id}/track/${trackId}`,
+          kind: track.kind,
+          mimeType: track.mimeType,
+          sessionId: projectSession.id,
+          trackId
+        })),
         composite: {
           filter: "overlay",
-          arguments: { position: elements.insetPosition.value, size: elements.insetSize.value }
+          arguments: { position: elements.insetPosition.value, size: elements.insetSize.value, shape: elements.insetShape.value }
         },
         encoder: null
       }
@@ -356,7 +375,7 @@ async function exportProject() {
   exportTimeline.metadata.webcli.operations = [
     { name: "assemble", session_id: projectSession.id },
     { name: "title", text: exportTimeline.metadata.webcli.title },
-    { name: "audio mix", volume_percent: Number(elements.audioLevel.value) },
+    { name: "audio mix", volume_percent: Number(elements.audioLevel.value), microphone_volume_percent: Number(elements.microphoneLevel.value) },
     { name: "inset layout", ...exportTimeline.metadata.webcli.composite.arguments },
     { name: "export", format: "otio-json" }
   ];
@@ -380,16 +399,26 @@ async function exportSources() {
 }
 
 function syncTimelineControls() {
-  if (!timeline) return;
-  try {
-    let updated = applyTitle(timeline, elements.titleText.value);
-    updated = applyAudioMix(updated, Number(elements.audioLevel.value));
-    const hasCamera = updated.tracks.children.some((track) => /camera/i.test(track.name));
-    if (hasCamera) updated = applyInsetLayout(updated, elements.insetPosition.value, elements.insetSize.value);
-    timeline = updated;
-  } catch (error) {
-    if (error.reason !== "no-source") setMessage(error.message, true);
+  const settings = {
+    title: elements.titleText.value.trim() || null,
+    clipVolumePercent: Number(elements.audioLevel.value),
+    microphoneVolumePercent: Number(elements.microphoneLevel.value),
+    position: elements.insetPosition.value,
+    size: elements.insetSize.value,
+    shape: elements.insetShape.value
+  };
+  if (timeline) {
+    try {
+      let updated = applyTitle(timeline, elements.titleText.value);
+      updated = applyAudioMix(updated, settings.clipVolumePercent, settings.microphoneVolumePercent);
+      const hasCamera = updated.tracks.children.some((track) => /camera/i.test(track.name));
+      if (hasCamera) updated = applyInsetLayout(updated, settings.position, settings.size, settings.shape);
+      timeline = updated;
+    } catch (error) {
+      if (error.reason !== "no-source") setMessage(error.message, true);
+    }
   }
+  window.dispatchEvent(new CustomEvent("video-capture-settings", { detail: settings }));
 }
 
 async function offerRecovery() {
@@ -440,8 +469,25 @@ elements.audioLevel.addEventListener("input", () => {
   elements.audioValue.textContent = `${elements.audioLevel.value}%`;
   syncTimelineControls();
 });
+elements.microphoneLevel.addEventListener("input", () => {
+  elements.microphoneValue.textContent = `${elements.microphoneLevel.value}%`;
+  syncTimelineControls();
+});
 elements.insetPosition.addEventListener("change", syncTimelineControls);
 elements.insetSize.addEventListener("change", syncTimelineControls);
+elements.insetShape.addEventListener("change", syncTimelineControls);
+
+window.addEventListener("video-editor-settings-restored", (event) => {
+  const { title, clipVolumePercent, microphoneVolumePercent, position, size, shape } = event.detail;
+  elements.titleText.value = title ?? "";
+  elements.audioLevel.value = String(clipVolumePercent ?? 100);
+  elements.audioValue.textContent = `${elements.audioLevel.value}%`;
+  elements.microphoneLevel.value = String(microphoneVolumePercent ?? 100);
+  elements.microphoneValue.textContent = `${elements.microphoneLevel.value}%`;
+  elements.insetPosition.value = position ?? "bottom-right";
+  elements.insetSize.value = size ?? "medium";
+  elements.insetShape.value = shape ?? "rounded";
+});
 
 updateRecordingUI(false);
 renderProject(false);

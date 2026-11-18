@@ -1,47 +1,45 @@
 # video.webcli.app
 
-The goal is an iMovie-like video editor for the web: your screen, camera, microphone, and existing clips in; an edited video with captions out. This is the only Web-CLI family tool that captures; it is not [ffmpeg.webcli.app](https://ffmpeg.webcli.app), which transforms files you already have, or [hls.webcli.app](https://hls.webcli.app), which packages and manages a published library.
+This is a local-first, iMovie-style web editor: your screen, camera, microphone, and existing clips in; an edited video with captions out. It is the only Web-CLI family tool that captures. It is not [ffmpeg.webcli.app](https://ffmpeg.webcli.app), which transforms files you already have, or [hls.webcli.app](https://hls.webcli.app), which packages and manages a published library.
 
-The Loom distinction matters: Loom uploads your screen recording to Loom. This tool is designed to keep capture in your browser.
+Loom uploads your screen recording to Loom. This editor records and processes media in your browser and does not upload it to a third-party service.
 
 ## Run locally
 
-Serve this directory over `localhost` (required for screen capture and the origin-private file system):
+Screen capture and the origin-private file system require a secure context: **localhost or HTTPS**.
 
 ```sh
 python3 -m http.server 8000
 ```
 
-Open `http://localhost:8000/`. The included export bundle runs locally; rebuilding it requires installing development dependencies. The page has a restrictive Content Security Policy with `connect-src 'none'`; its scripts, styles, and capture data are local.
+Open `http://localhost:8000/`. The page's Content Security Policy uses `connect-src 'self'`: same-origin resources can load, but connections to third-party origins are blocked. The editor does not need a third-party service to capture, edit, or export.
 
 ## Capture and recovery
 
-Start capture only from the **Start capture** action. Screen, optional camera, and optional microphone are recorded as separate MediaRecorder tracks. Camera and microphone each require a separate opt-in. Chunk data is written to the origin-private file system (OPFS), with IndexedDB used when OPFS is unavailable. The small IndexedDB manifest is updated as chunks arrive. If a tab is reopened with an unfinished session, the app offers to recover it; recorded chunks can be downloaded per track.
+Capture begins only after selecting **Start capture** and granting the browser's screen-sharing permission. Screen, optional camera, and optional microphone are recorded as separate tracks; camera and microphone are independent opt-ins. The recording indicator and live-source status remain visible while capture is active.
 
-Browser storage is subject to the browser's quota and eviction policy. Keep a second copy of important work; no browser application can guarantee recovery after the browser or device removes its origin storage.
+Chunks are written as they arrive to the origin-private file system (OPFS), with IndexedDB as the fallback. The app keeps a small IndexedDB session manifest and offers to recover an unfinished session when reopened. Captured tracks stay in this browser origin; browser storage quotas, eviction, and user-cleared site data can still remove them, so download important source tracks.
 
-## Editing
+## Editing and project recovery
 
-Import browser-supported video files into the media library and add them to the timeline. Select clips to trim them by source time, split at the playhead, reorder, remove, or undo. Drag clips to reorder them, and drag the red timeline playhead to seek; the move buttons and preview seek slider remain available for keyboard use. Preview plays the assembled sequence locally. Captured screen and camera tracks appear in the library after recording or recovery; the microphone remains a separate downloadable source and is not mixed into preview.
+Import browser-supported video files and add them to the timeline. Select clips to trim, split at the playhead, reorder, remove, or undo. Drag clips to reorder them and drag the red playhead to seek. Changes to the timeline, captions, and undo history are saved locally. Files imported with **Import with reload access** store a file handle so access can be requested again after reopening. If a source is unavailable, its clip remains on the timeline as missing until relinked.
 
-Imported files and the edit timeline currently live only in the open tab: they are not restored on reload. Keep your original files. **Export project** downloads OTIO-shaped timeline JSON only; importing or relinking that project is not implemented. Captured source chunks continue to use persistent browser storage.
+**Export project JSON** downloads an OTIO-shaped project, and **Import project JSON** can restore it. Media itself is not embedded in that project: keep the original files available to relink. Captured sources can be restored from this origin's browser storage.
 
-Choose **Import SRT captions** to place cues on the global timeline. They appear in preview and stay at their original timeline times when clips are reordered or trimmed. Importing another SRT replaces the existing captions; **Remove captions** clears them, and **Undo** restores the previous caption state. Captions extending beyond the sequence must be corrected before export.
+Choose **Import SRT captions** to add cues to the global timeline. They appear in preview and retain their timeline times when clips are reordered or trimmed. Importing another SRT replaces the existing captions; **Remove captions** clears them, and **Undo** restores the previous caption state. Captions extending beyond the sequence must be corrected before export.
 
-## Video export
+## Preview and export
 
-Below the timeline, choose **Burn into video** for permanently visible captions or **Selectable subtitle track** for WebVTT captions that a player can turn on or off. Then choose **Export MP4** and use the download links when rendering completes. Selectable WebVTT-in-MP4 captions may not be supported by all players.
+The camera inset is composited over the screen in preview and export. Its corner, size, and shape can be changed after capture. Clip audio and the optional microphone track are mixed with separate gain controls. These operations are performed locally; the microphone remains a separate source track.
 
-The browser renders clips at 30 fps at the first clip's dimensions (other clips are letterboxed), and encodes H.264 video and, when present, AAC audio. Audio from video clips is included; files with multiple audio tracks and unsupported decoding or encoding are reported instead of silently omitting audio. A browser with the necessary WebCodecs and OPFS support is required.
+Choose **Burn into video** for permanently visible captions or **Selectable subtitle track** for WebVTT subtitles. Then choose **Export MP4** and download the resulting video, manifest, licenses, and `files.sha256`. The MP4 uses H.264 video and AAC audio when the browser supports the required WebCodecs. Audio decoding uses WebCodecs first, with a browser-native fallback limited to source files up to 64 MiB and decoded buffers up to 256 MiB. Unsupported decode or encode paths fail with an explicit error rather than silently dropping audio. Selectable WebVTT-in-MP4 captions may not work in every player.
 
-Download the video, encoder/timeline manifest, dependency licenses, and `files.sha256` using the separate links. Export files are stored in browser origin storage and count against its quota. Clearing this site's data removes them **and any stored captures**, so download anything you want to keep first. Encoding is browser-dependent, so identical exports are not guaranteed to have identical bytes. Export does not upload media.
+The editor renders at 30 fps using the first clip's dimensions and letterboxes other clips. The manifest records a SHA-256 hash of the pre-encode frame sequence and declares `frames: true`; it declares `bytes: false` because WebCodecs output varies by browser build and hardware acceleration. Export files are stored in browser-origin storage and count against its quota. Download anything you want to keep before clearing this site's data.
 
-## Current implementation boundary
+## Handoff and privacy
 
-The capture project model supports title, audio level, and inset layout metadata; these are not applied to the editor preview or video export. Captured microphone and camera tracks are not mixed or composited into the video automatically. The export uses WebCodecs and the locally bundled Mediabunny muxer, not ffmpeg.wasm.
-
-The tools run on separate origins and cannot share browser storage. Until the family adopts a user-granted shared directory, moving media to whisper or hls requires downloading it and importing it in the other tool.
+The page's CSP blocks connections to third-party origins, and capture starts only after explicit user action. The Web-CLI tools run on separate origins and cannot share browser storage. Moving media to whisper or hls therefore requires downloading it and importing it in the other tool; there is no shared cross-origin working directory.
 
 ## Development
 
-Install dependencies with `npm ci`, rebuild the export bundle with `npm run build`, and run the tests with `npm test`. The app uses modern Chromium APIs (`getDisplayMedia`, MediaRecorder, OPFS where available, and IndexedDB fallback).
+Install dependencies with `npm ci`, rebuild the export bundle with `npm run build`, and run the tests with `npm test`. The app uses modern browser APIs including `getDisplayMedia`, MediaRecorder, WebCodecs, OPFS where available, and IndexedDB fallback.

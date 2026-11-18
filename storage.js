@@ -1,7 +1,8 @@
 const DATABASE_NAME = "video-webcli";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const SESSION_STORE = "sessions";
 const CHUNK_STORE = "chunks";
+const PROJECT_STORE = "projects";
 
 let databasePromise;
 
@@ -11,16 +12,39 @@ function openDatabase() {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       const database = request.result;
-      database.createObjectStore(SESSION_STORE, { keyPath: "id" });
-      database.createObjectStore(CHUNK_STORE, { keyPath: "key" });
+      if (!database.objectStoreNames.contains(SESSION_STORE)) database.createObjectStore(SESSION_STORE, { keyPath: "id" });
+      if (!database.objectStoreNames.contains(CHUNK_STORE)) database.createObjectStore(CHUNK_STORE, { keyPath: "key" });
+      if (!database.objectStoreNames.contains(PROJECT_STORE)) database.createObjectStore(PROJECT_STORE, { keyPath: "id" });
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
+    request.onblocked = () => {
+      databasePromise = undefined;
+      reject(new Error("Close older video.webcli.app tabs, then reload to upgrade local project storage."));
+    };
     request.onerror = () => {
       databasePromise = undefined;
       reject(request.error ?? new Error("Unable to open local recording storage."));
     };
   });
   return databasePromise;
+}
+
+export async function saveEditorProject(project) {
+  const database = await openDatabase();
+  const transaction = database.transaction(PROJECT_STORE, "readwrite");
+  transaction.objectStore(PROJECT_STORE).put({ ...project, id: "current", updatedAt: Date.now() });
+  await transactionDone(transaction);
+}
+
+export async function loadEditorProject() {
+  const database = await openDatabase();
+  const transaction = database.transaction(PROJECT_STORE, "readonly");
+  const result = await requestResult(transaction.objectStore(PROJECT_STORE).get("current"));
+  await transactionDone(transaction);
+  return result ?? null;
 }
 
 function transactionDone(transaction) {

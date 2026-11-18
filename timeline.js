@@ -56,9 +56,9 @@ export function createTimeline(session) {
         operations: [],
         composite: {
           filter: "overlay",
-          arguments: { position: "bottom-right", size: "medium" }
+          arguments: { position: "bottom-right", size: "medium", shape: "rounded" }
         },
-        audio_mix: { volume_percent: 100 },
+        audio_mix: { volume_percent: 100, microphone_volume_percent: 100 },
         title: null,
         encoder: null
       }
@@ -74,30 +74,32 @@ export function applyTitle(timeline, text) {
   return next;
 }
 
-export function applyAudioMix(timeline, volumePercent) {
+export function applyAudioMix(timeline, volumePercent, microphoneVolumePercent = 100) {
   if (!timeline?.tracks?.children?.length) reject("no-source");
-  if (!Number.isFinite(volumePercent) || volumePercent < 0 || volumePercent > 200) {
+  if (!Number.isFinite(volumePercent) || volumePercent < 0 || volumePercent > 200 ||
+      !Number.isFinite(microphoneVolumePercent) || microphoneVolumePercent < 0 || microphoneVolumePercent > 200) {
     reject("unknown-codec");
   }
   const next = clone(timeline);
-  next.metadata.webcli.audio_mix = { volume_percent: volumePercent };
-  next.metadata.webcli.operations.push({ name: "audio mix", volume_percent: volumePercent });
+  next.metadata.webcli.audio_mix = { volume_percent: volumePercent, microphone_volume_percent: microphoneVolumePercent };
+  next.metadata.webcli.operations.push({ name: "audio mix", volume_percent: volumePercent, microphone_volume_percent: microphoneVolumePercent });
   return next;
 }
 
-export function applyInsetLayout(timeline, position, size) {
+export function applyInsetLayout(timeline, position, size, shape = "rounded") {
   if (!timeline?.tracks?.children?.length) reject("no-source");
   const hasCamera = timeline.tracks.children.some((track) => track.kind === "video" && /camera/i.test(track.name));
   if (!hasCamera) reject("no-source");
   const validPositions = ["top-left", "top-right", "bottom-left", "bottom-right"];
   const validSizes = ["small", "medium", "large"];
-  if (!validPositions.includes(position) || !validSizes.includes(size)) reject("unknown-codec");
+  const validShapes = ["rounded", "rectangle", "circle"];
+  if (!validPositions.includes(position) || !validSizes.includes(size) || !validShapes.includes(shape)) reject("unknown-codec");
   const next = clone(timeline);
   next.metadata.webcli.composite = {
     filter: "overlay",
-    arguments: { position, size }
+    arguments: { position, size, shape }
   };
-  next.metadata.webcli.operations.push({ name: "inset layout", position, size });
+  next.metadata.webcli.operations.push({ name: "inset layout", position, size, shape });
   return next;
 }
 

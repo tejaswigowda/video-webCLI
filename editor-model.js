@@ -18,7 +18,24 @@ export function newEditorTimeline() {
       children: [{ OTIO_SCHEMA: "Track.1", name: "Video 1", kind: "Video", children: [], metadata: {} }],
       metadata: {}
     },
-    metadata: { webcli: { encoder: null, captions: [] } }
+    metadata: {
+      webcli: {
+        encoder: null,
+        captions: [],
+        sources: [],
+        capture_sources: {},
+        capture_settings: {
+          title: null,
+          clipVolumePercent: 100,
+          microphoneVolumePercent: 100,
+          position: "bottom-right",
+          size: "medium",
+          shape: "rounded"
+        },
+        composite: { filter: "overlay", arguments: { position: "bottom-right", size: "medium", shape: "rounded" } },
+        audio_mix: { volume_percent: 100, microphone_volume_percent: 100 }
+      }
+    }
   };
 }
 

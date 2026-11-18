@@ -1,5 +1,6 @@
-import { loadTrackBlob } from "./storage.js";
+import { loadEditorProject, loadTrackBlob, saveEditorProject } from "./storage.js";
 import { renderVideo } from "./export-bundle.js";
+import { cameraTimeForClip, drawComposite } from "./compositor.js";
 import { captionsAt, parseSrt } from "./subtitles.js";
 import {
   addClip, clipsOf, locateTime, moveClip, newEditorTimeline, removeClip, reorderClip, splitClip,
@@ -14,7 +15,8 @@ const elements = Object.fromEntries([
   "selected-name", "source-duration", "clip-duration", "trim-start", "trim-end", "apply-trim",
   "remove-clip", "split", "move-left", "move-right", "undo", "editor-export",
   "srt-input", "remove-captions", "caption-count", "preview-captions",
-  "export-video", "caption-mode", "export-status", "export-downloads"
+  "export-video", "caption-mode", "export-status", "export-downloads",
+  "import-handles", "project-input", "preview-composite", "preview-camera", "preview-microphone"
 ].map((id) => [id, $(id)]));
 
 const sources = new Map();
@@ -26,6 +28,40 @@ let currentClipId = null;
 let previewRequest = 0;
 let draggedClipId = null;
 let animationFrame = null;
+let projectReady = false;
+let persistTimer = null;
+let audioContext;
+let previewClipGain;
+let previewMicrophoneGain;
+let previewMicrophoneSource;
+
+function sourceRecord(source) {
+  return {
+    id: source.id,
+    name: source.name,
+    durationMs: source.durationMs,
+    reference: source.reference,
+    kind: source.kind,
+    mimeType: source.file?.type ?? source.mimeType,
+    handle: source.handle ?? null,
+    sessionId: source.sessionId ?? null,
+    trackId: source.trackId ?? null
+  };
+}
+
+function persistProjectSoon() {
+  if (!projectReady) return;
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    saveEditorProject({
+      timeline,
+      history,
+      selectedId,
+      positionMs,
+      sources: [...sources.values()].map(sourceRecord)
+    }).catch((error) => message(`Could not save this edit: ${error.message}`, true));
+  }, 150);
+}
 
 function message(text, isError = false) {
   const box = elements["editor-message"];
@@ -69,16 +105,23 @@ async function addSource(file, options = {}) {
   const durationMs = options.durationMs || await sourceDuration(file);
   if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error("The video has no usable duration.");
   const id = options.id || crypto.randomUUID();
-  if (sources.has(id)) return;
+  const previous = sources.get(id);
+  if (previous?.url) URL.revokeObjectURL(previous.url);
   sources.set(id, {
     id,
     name: options.name || file.name,
     durationMs,
     reference: options.reference || encodeURIComponent(file.name),
+    kind: options.kind || "video",
+    mimeType: options.mimeType || file.type,
+    handle: options.handle || previous?.handle || null,
+    sessionId: options.sessionId || previous?.sessionId || null,
+    trackId: options.trackId || previous?.trackId || null,
     file,
     url: URL.createObjectURL(file)
   });
   renderMedia();
+  persistProjectSoon();
 }
 
 function renderMedia() {
@@ -98,18 +141,203 @@ function renderMedia() {
     const duration = document.createElement("small");
     duration.textContent = formatTime(source.durationMs, true);
     info.append(name, duration);
-    const button = document.createElement("button");
-    button.className = "media-add";
-    button.textContent = "+";
-    button.title = `Add ${source.name} to timeline`;
-    button.setAttribute("aria-label", button.title);
-    button.addEventListener("click", () => {
-      const clipId = crypto.randomUUID();
-      mutate(() => addClip(timeline, source, clipId), clipId, timelineDuration(timeline));
-    });
-    row.append(thumb, info, button);
+    if (!source.file) row.classList.add("source-missing");
+    if (!source.file) {
+      duration.textContent = "Missing — relink to restore";
+      row.title = source.restoreError ?? "Choose Relink to grant access or locate this file.";
+    }
+    const actions = document.createElement("span");
+    actions.className = "media-actions";
+    if (source.kind === "video") {
+      const button = document.createElement("button");
+      button.className = "media-add";
+      button.textContent = "+";
+      button.title = `Add ${source.name} to timeline`;
+      button.setAttribute("aria-label", button.title);
+      button.disabled = !source.file;
+      button.addEventListener("click", () => {
+        const clipId = crypto.randomUUID();
+        mutate(() => addClip(timeline, source, clipId), clipId, timelineDuration(timeline));
+      });
+      actions.append(button);
+    } else {
+      const audioKind = document.createElement("small");
+      audioKind.textContent = "Audio track";
+      actions.append(audioKind);
+    }
+    if (!source.file) {
+      const relink = document.createElement("button");
+      relink.className = "text-button";
+      relink.textContent = "Relink";
+      relink.addEventListener("click", () => relinkSource(source.id).catch((error) => message(`Could not relink ${source.name}: ${error.message}`, true)));
+      actions.append(relink);
+    }
+    row.append(thumb, info, actions);
     elements["media-list"].append(row);
   }
+}
+
+async function restoreSource(record) {
+  const source = { ...record, file: null, url: null, handle: record.handle ?? null };
+  try {
+    if (source.handle && await source.handle.queryPermission({ mode: "read" }) === "granted") {
+      source.file = await source.handle.getFile();
+    } else if (source.sessionId && source.trackId) {
+      const session = await loadTrackBlob(source.sessionId, source.trackId);
+      source.file = new File([session], source.name, { type: source.mimeType || (source.kind === "audio" ? "audio/webm" : "video/webm") });
+    }
+  } catch {
+    source.file = null;
+    source.restoreError = "Stored media is unavailable or permission is required.";
+  }
+  if (source.file) source.url = URL.createObjectURL(source.file);
+  sources.set(source.id, source);
+}
+
+async function restoreProject() {
+  try {
+    const saved = await loadEditorProject();
+    if (saved?.timeline?.OTIO_SCHEMA === "Timeline.1") {
+      timeline = saved.timeline;
+      history = Array.isArray(saved.history) ? saved.history : [];
+      selectedId = saved.selectedId ?? null;
+      positionMs = Math.min(saved.positionMs ?? 0, timelineDuration(timeline));
+      for (const record of saved.sources ?? []) await restoreSource(record);
+      const metadataSources = timeline.metadata?.webcli?.sources ?? [];
+      for (const record of metadataSources) {
+        if (!sources.has(record.id)) await restoreSource(record);
+      }
+    }
+    projectReady = true;
+    renderMedia();
+    render();
+    if (timeline.metadata?.webcli?.capture_settings) {
+      window.dispatchEvent(new CustomEvent("video-editor-settings-restored", {
+        detail: timeline.metadata.webcli.capture_settings
+      }));
+    }
+    await showPosition(positionMs);
+    if (sources.size || clipsOf(timeline).length) message("Restored this editor project from local browser storage.");
+  } catch (error) {
+    projectReady = true;
+    render();
+    message(`Could not restore the editor project: ${error.message}`, true);
+  }
+}
+
+async function importWithHandles() {
+  if (!window.showOpenFilePicker) {
+    throw new Error("File System Access is unavailable. Use the regular import control; those files can be relinked manually after reopening.");
+  }
+  const handles = await window.showOpenFilePicker({
+    multiple: true,
+    types: [{ description: "Video files", accept: { "video/*": [".mp4", ".mov", ".webm", ".mkv", ".m4v"] } }]
+  });
+  for (const handle of handles) {
+    await addSource(await handle.getFile(), { handle });
+  }
+}
+
+async function relinkSource(id) {
+  const source = sources.get(id);
+  if (!source) throw new Error("Source record not found.");
+  let handle = source.handle;
+  if (handle) {
+    const permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") throw new Error("Read permission was not granted.");
+  } else {
+    if (!window.showOpenFilePicker) throw new Error("This browser cannot open the file picker needed to relink media.");
+    [handle] = await window.showOpenFilePicker({
+      multiple: false,
+      types: [{ description: source.kind === "audio" ? "Audio files" : "Video files", accept: { [source.kind === "audio" ? "audio/*" : "video/*"]: [] } }]
+    });
+  }
+  const file = await handle.getFile();
+  if (source.kind === "video") {
+    const durationMs = await sourceDuration(file);
+    const requiredMs = clipsOf(timeline)
+      .filter((clip) => clip.metadata.webcli.source_id === id)
+      .reduce((end, clip) => Math.max(end, clip.source_range.start_time.value + clip.source_range.duration.value), 0);
+    if (durationMs < requiredMs) throw new Error("The selected file is shorter than the timeline's saved source range.");
+    source.durationMs = durationMs;
+  }
+  source.handle = handle;
+  await addSource(file, { ...source, id, handle, durationMs: source.durationMs });
+  message(`Relinked ${source.name}.`);
+}
+
+async function importProjectFile(file) {
+  let imported = JSON.parse(await file.text());
+  if (imported?.OTIO_SCHEMA !== "Timeline.1" ||
+      imported.tracks?.OTIO_SCHEMA !== "Stack.1" ||
+      !Array.isArray(imported.tracks.children)) {
+    throw new Error("The file is not a supported video.webcli OTIO project.");
+  }
+  const captureMetadata = imported.metadata?.webcli ?? {};
+  const existingVideoClips = imported.tracks.children[0]?.children;
+  if ((!Array.isArray(existingVideoClips) || !existingVideoClips[0]?.metadata?.webcli?.source_id) &&
+      captureMetadata.session_id) {
+    const records = captureMetadata.sources ?? imported.tracks.children
+      .filter((track) => track.metadata?.webcli?.source_track_id)
+      .map((track) => {
+        const trackId = track.metadata.webcli.source_track_id;
+        const durationMs = track.children?.[0]?.media_reference?.available_range?.duration?.value ?? 1;
+        return {
+          id: `${captureMetadata.session_id}/${trackId}`,
+          name: `${track.name} recording`,
+          durationMs,
+          reference: `webcli://session/${captureMetadata.session_id}/track/${trackId}`,
+          kind: track.kind,
+          sessionId: captureMetadata.session_id,
+          trackId
+        };
+      });
+    const screen = records.find((record) => record.trackId === "screen" || /screen/i.test(record.name));
+    if (!screen) throw new Error("The capture project has no screen track to place on the timeline.");
+    const normalized = newEditorTimeline();
+    normalized.name = imported.name;
+    normalized.metadata.webcli = {
+      ...normalized.metadata.webcli,
+      ...captureMetadata,
+      sources: records,
+      captions: Array.isArray(captureMetadata.captions) ? captureMetadata.captions : [],
+      capture_sources: {
+        screen: screen.id,
+        camera: records.find((record) => record.trackId === "camera")?.id ?? null,
+        microphone: records.find((record) => record.trackId === "microphone")?.id ?? null
+      }
+    };
+    timeline = addClip(normalized, screen, crypto.randomUUID());
+    const captureClip = imported.tracks.children.find((track) => track.metadata?.webcli?.source_track_id === screen.trackId)?.children?.[0];
+    if (captureClip?.source_range) {
+      timeline = trimClip(timeline, clipsOf(timeline)[0].metadata.webcli.clip_id,
+        captureClip.source_range.start_time.value,
+        captureClip.source_range.start_time.value + captureClip.source_range.duration.value);
+    }
+    imported = timeline;
+  }
+  if (!Array.isArray(imported.metadata?.webcli?.captions)) imported.metadata.webcli.captions = [];
+  const clips = imported.tracks.children[0]?.children;
+  if (!Array.isArray(clips) || clips.some((clip) =>
+    clip.OTIO_SCHEMA !== "Clip.1" ||
+    typeof clip.metadata?.webcli?.source_id !== "string" ||
+    !Number.isFinite(clip.source_range?.start_time?.value) ||
+    !Number.isFinite(clip.source_range?.duration?.value) ||
+    clip.source_range.duration.value <= 0)) {
+    throw new Error("The project contains an invalid video clip or source reference.");
+  }
+  history = [];
+  selectedId = null;
+  positionMs = 0;
+  timeline = imported;
+  for (const record of imported.metadata.webcli.sources ?? []) {
+    if (!sources.has(record.id)) await restoreSource({ ...record, handle: null });
+  }
+  renderMedia();
+  render();
+  persistProjectSoon();
+  await showPosition(0);
+  message("Imported the OTIO project. Any unavailable media remains on the timeline as missing until relinked.");
 }
 
 function selectedClip() {
@@ -130,6 +358,126 @@ function updateCaptionPreview(position) {
     ? captionsAt(timeline.metadata.webcli.captions, position)
     : "";
   elements["preview-captions"].textContent = text;
+}
+
+function captureSources() {
+  return timeline.metadata?.webcli?.capture_sources ?? {};
+}
+
+function compositeLayout() {
+  const settings = timeline.metadata?.webcli?.composite?.arguments ?? {};
+  return { position: settings.position, size: settings.size, shape: settings.shape };
+}
+
+function audioMix() {
+  return timeline.metadata?.webcli?.audio_mix ?? {};
+}
+
+function updateCompositePreview() {
+  const context = elements["preview-composite"].getContext("2d");
+  if (!context || !elements.preview.videoWidth || !elements.preview.videoHeight) return;
+  const canvas = elements["preview-composite"];
+  if (canvas.width !== elements.preview.videoWidth || canvas.height !== elements.preview.videoHeight) {
+    canvas.width = elements.preview.videoWidth;
+    canvas.height = elements.preview.videoHeight;
+  }
+  const location = locateTime(timeline, positionMs);
+  const config = captureSources();
+  const sourceId = location?.clip.metadata.webcli.source_id;
+  const camera = sourceId === config.screen && config.camera && sources.get(config.camera)?.file
+    ? elements["preview-camera"]
+    : null;
+  drawComposite(context, elements.preview, camera, compositeLayout());
+  canvas.classList.add("has-source");
+}
+
+function sourceTimeAt(position, location) {
+  const config = captureSources();
+  return cameraTimeForClip(location.clip, position, location.start, config.screen);
+}
+
+function setupPreviewAudio() {
+  if (audioContext) return;
+  audioContext = new AudioContext();
+  const clipSource = audioContext.createMediaElementSource(elements.preview);
+  previewClipGain = audioContext.createGain();
+  clipSource.connect(previewClipGain).connect(audioContext.destination);
+  previewMicrophoneSource = audioContext.createMediaElementSource(elements["preview-microphone"]);
+  previewMicrophoneGain = audioContext.createGain();
+  previewMicrophoneSource.connect(previewMicrophoneGain).connect(audioContext.destination);
+}
+
+function applyPreviewGains() {
+  if (!audioContext) return;
+  const mix = audioMix();
+  previewClipGain.gain.value = Math.max(0, mix.volume_percent ?? 100) / 100;
+  previewMicrophoneGain.gain.value = Math.max(0, mix.microphone_volume_percent ?? 100) / 100;
+}
+
+async function seekVideoElement(video, time, play) {
+  if (video.readyState < 2) {
+    await new Promise((resolve, reject) => {
+      video.addEventListener("loadeddata", resolve, { once: true });
+      video.addEventListener("error", () => reject(new Error("Unable to decode a capture video track.")), { once: true });
+    });
+  }
+  const target = Math.min(time, Math.max(0, video.duration - 0.01));
+  if (Math.abs(video.currentTime - target) > 0.04) {
+    const seeked = new Promise((resolve) => video.addEventListener("seeked", resolve, { once: true }));
+    video.currentTime = target;
+    await seeked;
+  }
+  if (video.paused) await video.play();
+  if (!play) {
+    if (video.requestVideoFrameCallback) {
+      await new Promise((resolve) => video.requestVideoFrameCallback(resolve));
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    video.pause();
+  }
+}
+
+async function syncCapturePreview(location, play) {
+  const config = captureSources();
+  const sourceId = location?.clip.metadata.webcli.source_id;
+  const captureTime = location ? sourceTimeAt(positionMs, location) / 1000 : 0;
+  const camera = sourceId === config.screen ? sources.get(config.camera) : null;
+  if (camera?.file) {
+    const cameraVideo = elements["preview-camera"];
+    if (cameraVideo.dataset.sourceId !== camera.id) {
+      cameraVideo.dataset.sourceId = camera.id;
+      cameraVideo.src = camera.url;
+      cameraVideo.load();
+    }
+    await seekVideoElement(cameraVideo, captureTime, play);
+  } else {
+    elements["preview-camera"].pause();
+  }
+
+  const microphone = sourceId === config.screen ? sources.get(config.microphone) : null;
+  const audio = elements["preview-microphone"];
+  if (microphone?.file) {
+    if (audio.dataset.sourceId !== microphone.id) {
+      audio.dataset.sourceId = microphone.id;
+      audio.src = microphone.url;
+      audio.load();
+    }
+    if (audio.readyState >= 1 && Math.abs(audio.currentTime - captureTime) > 0.12) {
+      audio.currentTime = Math.min(captureTime, Math.max(0, audio.duration - 0.01));
+    }
+    if (play) {
+      setupPreviewAudio();
+      applyPreviewGains();
+      await audioContext.resume();
+      await audio.play();
+    } else {
+      audio.pause();
+    }
+  } else {
+    audio.pause();
+  }
+  updateCompositePreview();
 }
 
 function timelineXAtTime(position) {
@@ -220,6 +568,7 @@ function animatePlayhead() {
     updateTimelinePlayhead(position, true);
     updateCaptionPreview(position);
   }
+  updateCompositePreview();
   animationFrame = requestAnimationFrame(animatePlayhead);
 }
 
@@ -249,6 +598,7 @@ function mutate(change, nextSelection = selectedId, nextPosition = positionMs) {
     elements.preview.pause();
     render();
     void showPosition(positionMs);
+    persistProjectSoon();
   } catch (error) {
     message(`Edit refused: ${error.reason || error.message}`, true);
   }
@@ -276,14 +626,15 @@ function render() {
     elements["timeline-clips"].append(empty);
   }
   clips.forEach((clip) => {
+    const source = sources.get(clip.metadata.webcli.source_id);
     const button = document.createElement("button");
-    button.className = `timeline-clip${clip.metadata.webcli.clip_id === selectedId ? " selected" : ""}`;
+    button.className = `timeline-clip${clip.metadata.webcli.clip_id === selectedId ? " selected" : ""}${source?.file ? "" : " missing"}`;
     button.draggable = true;
     button.dataset.clipId = clip.metadata.webcli.clip_id;
     button.style.width = `${Math.max(92, Math.min(260, clip.source_range.duration.value / 1000 * 20))}px`;
     button.setAttribute("aria-pressed", String(clip.metadata.webcli.clip_id === selectedId));
     const name = document.createElement("strong");
-    name.textContent = clip.name;
+    name.textContent = source?.file ? clip.name : `${clip.name} · missing`;
     const length = document.createElement("small");
     length.textContent = formatTime(clip.source_range.duration.value, true);
     button.append(name, length);
@@ -355,10 +706,18 @@ async function showPosition(position, play = false) {
   updateTimelinePlayhead(positionMs, true);
   updateCaptionPreview(positionMs);
   const location = locateTime(timeline, positionMs);
-  if (!location) return;
+  if (!location) {
+    elements["preview-camera"].pause();
+    elements["preview-microphone"].pause();
+    return;
+  }
   const source = sources.get(location.clip.metadata.webcli.source_id);
-  if (!source) {
-    message(`Source missing: ${location.clip.name}. Import it again.`, true);
+  if (!source?.file) {
+    elements["preview-camera"].pause();
+    elements["preview-microphone"].pause();
+    elements["preview-composite"].classList.remove("has-source");
+    elements["viewer-empty"].classList.remove("hidden");
+    message(`Source missing: ${location.clip.name}. Relink it from the media library; the clip remains on your timeline.`, true);
     return;
   }
   const video = elements.preview;
@@ -378,7 +737,13 @@ async function showPosition(position, play = false) {
     video.currentTime = sourceTime;
     video.classList.add("has-source");
     elements["viewer-empty"].classList.add("hidden");
-    if (play && positionMs < total) await video.play();
+    await syncCapturePreview(location, play && positionMs < total);
+    if (play && positionMs < total) {
+      setupPreviewAudio();
+      applyPreviewGains();
+      await audioContext.resume();
+      await video.play();
+    }
   } catch (error) {
     if (request === previewRequest) {
       currentClipId = null;
@@ -396,6 +761,22 @@ elements["media-input"].addEventListener("change", async (event) => {
     }
   }
   event.target.value = "";
+});
+elements["import-handles"].addEventListener("click", () => {
+  importWithHandles().catch((error) => {
+    if (error.name !== "AbortError") message(`Could not import media: ${error.message}`, true);
+  });
+});
+elements["project-input"].addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    await importProjectFile(file);
+  } catch (error) {
+    message(`Could not import project: ${error.message}`, true);
+  } finally {
+    event.target.value = "";
+  }
 });
 
 elements["srt-input"].addEventListener("change", async (event) => {
@@ -426,11 +807,17 @@ elements.preview.addEventListener("play", () => {
   elements["play-button"].setAttribute("aria-label", "Pause");
   if (animationFrame === null) animationFrame = requestAnimationFrame(animatePlayhead);
 });
+elements.preview.addEventListener("loadeddata", updateCompositePreview);
+elements.preview.addEventListener("seeked", updateCompositePreview);
+elements["preview-camera"].addEventListener("loadeddata", updateCompositePreview);
+elements["preview-camera"].addEventListener("seeked", updateCompositePreview);
 elements.preview.addEventListener("pause", () => {
   elements["play-button"].textContent = "▶";
   elements["play-button"].setAttribute("aria-label", "Play");
   if (animationFrame !== null) cancelAnimationFrame(animationFrame);
   animationFrame = null;
+  elements["preview-camera"].pause();
+  elements["preview-microphone"].pause();
 });
 elements.preview.addEventListener("timeupdate", () => {
   if (elements.preview.paused) return;
@@ -523,19 +910,88 @@ elements.undo.addEventListener("click", () => {
   elements.preview.pause();
   render();
   void showPosition(positionMs);
+  persistProjectSoon();
 });
 elements["editor-export"].addEventListener("click", () => {
   if (!clipsOf(timeline).length) {
     message("Add a clip to the timeline before exporting a project.", true);
     return;
   }
-  const url = URL.createObjectURL(new Blob([JSON.stringify(timeline, null, 2)], { type: "application/json" }));
+  const exported = structuredClone(timeline);
+  exported.metadata.webcli.sources = [...sources.values()].map(({ handle, file, url, ...record }) => record);
+  const url = URL.createObjectURL(new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }));
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = "timeline.otio";
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  message("Exported timeline JSON. Project reopening is not yet available; keep your original media.");
+  message("Exported the OTIO project. Import this JSON later and relink any unavailable media.");
+});
+
+window.addEventListener("video-capture-settings", (event) => {
+  const settings = event.detail;
+  const next = structuredClone(timeline);
+  next.metadata.webcli.capture_settings = settings;
+  next.metadata.webcli.title = settings.title;
+  next.metadata.webcli.audio_mix = {
+    volume_percent: settings.clipVolumePercent,
+    microphone_volume_percent: settings.microphoneVolumePercent
+  };
+  next.metadata.webcli.composite = {
+    filter: "overlay",
+    arguments: { position: settings.position, size: settings.size, shape: settings.shape }
+  };
+  timeline = next;
+  applyPreviewGains();
+  updateCompositePreview();
+  persistProjectSoon();
+});
+
+window.addEventListener("video-capture-ready", async (event) => {
+  const session = event.detail;
+  const roles = {};
+  const failures = [];
+  for (const [trackId, track] of Object.entries(session.tracks)) {
+    if (!track.chunkCount || !["video", "audio"].includes(track.kind)) continue;
+    try {
+      const blob = await loadTrackBlob(session.id, trackId);
+      const file = new File([blob], `${track.label}.webm`, { type: track.mimeType });
+      const id = `${session.id}/${trackId}`;
+      await addSource(file, {
+        id,
+        name: `${track.label} recording`,
+        durationMs: track.durationMs || session.durationMs,
+        reference: `webcli://session/${session.id}/track/${trackId}`,
+        kind: track.kind,
+        mimeType: track.mimeType,
+        sessionId: session.id,
+        trackId
+      });
+      roles[trackId] = id;
+    } catch (error) {
+      failures.push(`${track.label}: ${error.message}`);
+    }
+  }
+  if (roles.screen) {
+    const next = structuredClone(timeline);
+    next.metadata.webcli.capture_sources = { screen: roles.screen, camera: roles.camera ?? null, microphone: roles.microphone ?? null };
+    timeline = clipsOf(timeline).length
+      ? next
+      : addClip(next, sources.get(roles.screen), crypto.randomUUID());
+    selectedId = clipsOf(timeline)[0]?.metadata.webcli.clip_id ?? null;
+    render();
+    void showPosition(0);
+    persistProjectSoon();
+  }
+  if (failures.length) message(`Could not load capture tracks: ${failures.join("; ")}`, true);
+  else if (roles.screen) message("Capture tracks added locally. Screen is on the timeline; camera and microphone settings can be changed after recording.");
+});
+
+window.addEventListener("video-editor-settings-restored", (event) => {
+  const settings = event.detail;
+  const next = structuredClone(timeline);
+  next.metadata.webcli.capture_settings = settings;
+  timeline = next;
 });
 
 let exportUrls = [];
@@ -548,7 +1004,8 @@ elements["export-video"].addEventListener("click", async () => {
   elements["export-status"].textContent = "Preparing export…";
   try {
     const snapshot = structuredClone(timeline);
-    const artifacts = await renderVideo(snapshot, new Map(sources), elements["caption-mode"].value, (percent) => {
+    const sourceSnapshot = new Map(sources);
+    const artifacts = await renderVideo(snapshot, sourceSnapshot, elements["caption-mode"].value, (percent) => {
       elements["export-status"].textContent = percent === 100 ? "Export complete." : `Rendering video: ${percent}%`;
     });
     for (const artifact of artifacts) {
@@ -568,29 +1025,4 @@ elements["export-video"].addEventListener("click", async () => {
     elements["caption-mode"].disabled = false;
   }
 });
-
-window.addEventListener("video-capture-ready", async (event) => {
-  const session = event.detail;
-  let added = 0;
-  const failures = [];
-  for (const [id, track] of Object.entries(session.tracks)) {
-    if (track.kind !== "video" || !track.chunkCount) continue;
-    try {
-      const blob = await loadTrackBlob(session.id, id);
-      const file = new File([blob], `${track.label}.webm`, { type: track.mimeType });
-      await addSource(file, {
-        id: `${session.id}/${id}`,
-        name: `${track.label} recording`,
-        durationMs: track.durationMs || session.durationMs,
-        reference: `webcli://session/${session.id}/track/${id}`
-      });
-      added++;
-    } catch (error) {
-      failures.push(`${track.label}: ${error.message}`);
-    }
-  }
-  if (failures.length) message(`Could not load recording: ${failures.join("; ")}`, true);
-  else if (added) message("Recording added to the library. Screen, camera, and microphone remain separate; download source tracks below.");
-});
-
-render();
+restoreProject().catch((error) => message(`Could not initialize the editor: ${error.message}`, true));

@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; img-src 'self' blob: data:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'self' blob:">
   <meta name="theme-color" content="#11131b">
   <title>video.webcli.app — your local video editor</title>
   <link rel="stylesheet" href="./styles.css">
@@ -39,6 +39,9 @@
           <span class="import-button">Browse files</span>
         </label>
         <input id="media-input" type="file" accept="video/*" multiple hidden>
+        <button id="import-handles" class="button button-secondary">Import with reload access</button>
+        <input id="project-input" type="file" accept=".otio,.json,application/json" hidden>
+        <label for="project-input" class="button button-secondary">Import project JSON</label>
         <div id="media-list" class="media-list"></div>
         <div class="caption-import">
           <label for="srt-input" class="button button-secondary">Import SRT captions</label>
@@ -46,7 +49,7 @@
           <button id="remove-captions" class="text-button" disabled>Remove captions</button>
           <span id="caption-count" class="library-note">No captions</span>
         </div>
-        <p class="library-note">Your files stay on this device. Imported files and timeline edits are cleared on reload.</p>
+        <p class="library-note">Your files and edits stay on this device. Use reload access to relink imported files after reopening.</p>
         <details class="capture-details" id="capture-details">
           <summary><span class="capture-icon">●</span><span>Record your screen<small>Capture separate source tracks</small></span><span>⌄</span></summary>
           <div class="capture-body">
@@ -63,6 +66,9 @@
         <div class="panel-top viewer-top"><div><p class="eyebrow">PREVIEW</p><h2>Viewer</h2></div><span class="viewer-badge">PROJECT PREVIEW</span></div>
         <div class="viewer-stage">
           <video id="preview" playsinline preload="metadata"></video>
+          <canvas id="preview-composite" aria-label="Composited video preview"></canvas>
+          <video id="preview-camera" playsinline muted preload="metadata"></video>
+          <audio id="preview-microphone" preload="auto"></audio>
           <div id="preview-captions" class="preview-captions" aria-live="off"></div>
           <div id="viewer-empty" class="viewer-empty"><div class="viewer-empty-icon">▶</div><strong>Let's make something.</strong><p>Import a clip or record your screen,<br>then add it to your timeline.</p></div>
         </div>
@@ -128,11 +134,13 @@
         <div id="track-list" class="track-list"></div>
         <div class="capture-settings">
           <label>Title <input id="title-text" type="text" maxlength="120"></label>
-          <label>Audio mix <span id="audio-value">100%</span><input id="audio-level" type="range" min="0" max="200" value="100"></label>
+          <label>Clip audio gain <span id="audio-value">100%</span><input id="audio-level" type="range" min="0" max="200" value="100"></label>
+          <label>Microphone gain <span id="microphone-value">100%</span><input id="microphone-level" type="range" min="0" max="200" value="100"></label>
           <label>Camera position <select id="inset-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right" selected>Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
           <label>Camera size <select id="inset-size"><option value="small">Small</option><option value="medium" selected>Medium</option><option value="large">Large</option></select></label>
+          <label>Camera shape <select id="inset-shape"><option value="rounded" selected>Rounded</option><option value="rectangle">Rectangle</option><option value="circle">Circle</option></select></label>
         </div>
-        <p class="library-note">Capture title, audio mix and camera inset are stored as metadata, not rendered in the editor preview.</p>
+        <p class="library-note">Capture title, per-track audio gains, and camera inset layout are applied to preview and export.</p>
       </div>
       <div class="capture-actions"><button id="export-project" class="button button-secondary" disabled>Export capture project</button><button id="export-sources" class="button button-secondary" disabled>Download source tracks</button></div>
     </details>

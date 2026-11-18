@@ -73,7 +73,9 @@ h2 { font-size: 15px; margin: 0; letter-spacing: -.025em; }
 .viewer-badge { color: #8e8d9f; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
 .viewer-stage { position: relative; flex: 1; display: grid; place-items: center; min-height: 250px; margin: 0 17px; border: 1px solid #30303e; border-radius: 7px; background: radial-gradient(ellipse at 50% 50%, #181724, #0d0e14 75%); overflow: hidden; }
 #preview { display: none; width: 100%; height: 100%; max-height: 370px; object-fit: contain; background: #08090d; }
-#preview.has-source { display: block; }
+#preview-composite { display: none; width: 100%; height: 100%; max-height: 370px; object-fit: contain; background: #08090d; }
+#preview-composite.has-source { display: block; }
+#preview-camera, #preview-microphone { display: none; }
 .preview-captions { position: absolute; bottom: 8%; left: 5%; right: 5%; text-align: center; color: white; font-size: clamp(14px, 2vw, 22px); font-weight: 600; white-space: pre-line; text-shadow: -2px -2px 3px #000, 2px 2px 3px #000, 0 0 8px #000; pointer-events: none; }
 .viewer-empty { text-align: center; }
 .viewer-empty-icon { display: grid; place-items: center; width: 49px; height: 49px; margin: 0 auto 15px; border: 1px solid #49425f; border-radius: 14px; color: #bba8f1; background: #292437; font-size: 16px; }
@@ -120,6 +122,9 @@ input[type="number"], input[type="text"], select { width: 100%; min-width: 0; he
 .timeline-empty span { color: #a696ce; font-size: 18px; }
 .timeline-clip { position: relative; display: grid; align-content: space-between; flex: 0 0 auto; min-width: 92px; max-width: 260px; height: 60px; padding: 8px 10px; border: 1px solid #625a87; border-radius: 5px; text-align: left; color: #ebe4ff; background: linear-gradient(115deg, #4a3b65, #35455d); }
 .timeline-clip.selected { border: 2px solid #c5afff; padding: 7px 9px; }
+.timeline-clip.missing { border-color: #b7666d; background: linear-gradient(115deg, #55343c, #3e3540); }
+.media-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.source-missing { border-color: #8e545c; }
 .timeline-clip.dragging { opacity: .4; }
 .timeline-clip.drop-before::before, .timeline-clip.drop-after::after { content: ""; position: absolute; top: -4px; bottom: -4px; width: 3px; border-radius: 2px; background: #d3bfff; z-index: 2; }
 .timeline-clip.drop-before::before { left: -5px; }

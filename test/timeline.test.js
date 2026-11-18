@@ -32,8 +32,14 @@ test("stores title, audio mix, and inset layout as editable metadata", () => {
   const edited = applyInsetLayout(applyAudioMix(applyTitle(timeline, "Bug report"), 80), "top-left", "small");
   assert.equal(edited.metadata.webcli.title, "Bug report");
   assert.equal(edited.metadata.webcli.audio_mix.volume_percent, 80);
-  assert.deepEqual(edited.metadata.webcli.composite.arguments, { position: "top-left", size: "small" });
+  assert.deepEqual(edited.metadata.webcli.composite.arguments, { position: "top-left", size: "small", shape: "rounded" });
   assert.equal(timeline.metadata.webcli.title, null);
+});
+
+test("stores microphone gain and inset shape", () => {
+  const updated = applyInsetLayout(applyAudioMix(createTimeline(session), 70, 125), "bottom-left", "large", "circle");
+  assert.deepEqual(updated.metadata.webcli.audio_mix, { volume_percent: 70, microphone_volume_percent: 125 });
+  assert.deepEqual(updated.metadata.webcli.composite.arguments, { position: "bottom-left", size: "large", shape: "circle" });
 });
 
 test("refuses an inset when there is no camera source", () => {
